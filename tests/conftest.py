@@ -1,75 +1,66 @@
 import pytest
+import os
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+from dotenv import load_dotenv
 
-from uuid import UUID
-from store.db.mongo import db_client
-from store.schemas.product import ProductIn, ProductUpdate
-from store.usecases.product import product_usecase
-from tests.factories import product_data, products_data
-from httpx import AsyncClient
+# Carrega variáveis de ambiente do arquivo .env
+load_dotenv()
 
+# Configura variáveis de ambiente necessárias para os testes
+os.environ['DATABASE_URL'] = os.getenv('DATABASE_URL', 'mongodb://localhost:27017/test_db')
 
+# Mock das dependências do MongoDB antes de importar qualquer coisa
+@pytest.fixture(scope="session", autouse=True)
+def mock_db_dependencies():
+    """Mock das dependências do MongoDB"""
+    import sys
+    
+    # Mock do motor
+    mock_motor = MagicMock()
+    mock_motor.AsyncIOMotorClient = MagicMock()
+    sys.modules['motor.motor_asyncio'] = mock_motor
+    
+    # Mock do pymongo
+    mock_pymongo = MagicMock()
+    mock_pymongo.ReturnDocument = MagicMock()
+    mock_pymongo.errors = MagicMock()
+    sys.modules['pymongo'] = mock_pymongo
+    
+    yield
+
+# Fixture para mock da coleção
+@pytest.fixture
+def mock_collection():
+    return AsyncMock()
+
+# Fixture para o usecase com mock
+@pytest.fixture
+def product_usecase(mock_collection):
+    """ProductUsecase com coleção mockada"""
+    # Mock do db_client para evitar conexões reais
+    with patch('store.usecases.product.db_client', MagicMock()):
+        from store.usecases.product import ProductUsecase
+        
+        usecase = ProductUsecase()
+        usecase.collection = mock_collection
+        return usecase
+
+# Configuração para testes assíncronos
 @pytest.fixture(scope="session")
 def event_loop():
-    loop = asyncio.get_event_loop_policy().new_event_loop()
+    """Cria uma event loop para testes assíncronos"""
+    policy = asyncio.WindowsSelectorEventLoopPolicy()
+    loop = policy.new_event_loop()
     yield loop
     loop.close()
 
-
-@pytest.fixture
-def mongo_client():
-    return db_client.get()
-
-
+# Fixture para mock das settings
 @pytest.fixture(autouse=True)
-async def clear_collections(mongo_client):
-    yield
-    collection_names = await mongo_client.get_database().list_collection_names()
-    for collection_name in collection_names:
-        if collection_name.startswith("system"):
-            continue
-
-        await mongo_client.get_database()[collection_name].delete_many({})
-
-
-@pytest.fixture
-async def client() -> AsyncClient:
-    from store.main import app
-
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        yield ac
-
-
-@pytest.fixture
-def products_url() -> str:
-    return "/products/"
-
-
-@pytest.fixture
-def product_id() -> UUID:
-    return UUID("fce6cc37-10b9-4a8e-a8b2-977df327001a")
-
-
-@pytest.fixture
-def product_in(product_id):
-    return ProductIn(**product_data(), id=product_id)
-
-
-@pytest.fixture
-def product_up(product_id):
-    return ProductUpdate(**product_data(), id=product_id)
-
-
-@pytest.fixture
-async def product_inserted(product_in):
-    return await product_usecase.create(body=product_in)
-
-
-@pytest.fixture
-def products_in():
-    return [ProductIn(**product) for product in products_data()]
-
-
-@pytest.fixture
-async def products_inserted(products_in):
-    return [await product_usecase.create(body=product_in) for product_in in products_in]
+def mock_settings():
+    """Mock das settings para evitar validation errors"""
+    with patch('store.core.config.settings') as mock_settings:
+        mock_settings.DATABASE_URL = "mongodb://localhost:27017/test_db"
+        mock_settings.PROJECT_NAME = "Store API Test"
+        mock_settings.ROOT_PATH = "/"
+        yield mock_settings
